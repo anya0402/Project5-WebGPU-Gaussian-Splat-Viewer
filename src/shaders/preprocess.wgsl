@@ -57,9 +57,23 @@ struct Gaussian {
 
 struct Splat {
     //TODO: store information for 2D splat rendering
+    pos: vec3<f32>,
+    opacity: f32,
 };
 
 //TODO: bind your data here
+@group(0) @binding(0)
+var<uniform> camera: CameraUniforms;
+@group(0) @binding(1)
+var<uniform> settings : RenderSettings;
+
+@group(1) @binding(0)
+var<storage, read_write> sh_coefficients: array<u32>;
+@group(1) @binding(1)
+var<storage, read_write> gaussians : array<Gaussian>;
+@group(1) @binding(2)
+var<storage, read_write> splats : array<Splat>;
+
 @group(2) @binding(0)
 var<storage, read_write> sort_infos: SortInfos;
 @group(2) @binding(1)
@@ -72,6 +86,7 @@ var<storage, read_write> sort_dispatch: DispatchIndirect;
 /// reads the ith sh coef from the storage buffer 
 fn sh_coef(splat_idx: u32, c_idx: u32) -> vec3<f32> {
     //TODO: access your binded sh_coeff, see load.ts for how it is stored
+
     return vec3<f32>(0.0);
 }
 
@@ -112,6 +127,43 @@ fn computeColorFromSH(dir: vec3<f32>, v_idx: u32, sh_deg: u32) -> vec3<f32> {
 fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) wgs: vec3<u32>) {
     let idx = gid.x;
     //TODO: set up pipeline as described in instruction
+
+    // dummy reads
+    let _test_focal = camera.focal.x + settings.gaussian_scaling;
+    let _val = sh_coefficients[idx];
+    let _dummy = gaussians[idx].pos_opacity[0];
+    splats[idx].pos = vec3(1.0, 1.0, 1.0);
+    let _keys = atomicLoad(&sort_infos.keys_size);
+    if (idx == 0u) {
+        atomicStore(&sort_infos.keys_size, _keys);
+        if (arrayLength(&sort_depths) > 0u) {
+            sort_depths[0] = _keys;
+        }
+        if (arrayLength(&sort_indices) > 0u) {
+            sort_indices[0] = idx;
+        }
+        atomicStore(&sort_dispatch.dispatch_x, _keys);
+    }
+
+    let gauss = gaussians[idx];
+    let gauss_xy = unpack2x16float(gauss.pos_opacity[0]);
+    let gauss_z = unpack2x16float(gauss.pos_opacity[1]);
+    let gauss_pos = vec4(gauss_xy.x, gauss_xy.y, gauss_z.x, 1.0);
+    let gauss_opacity = gauss_z.y;
+    let world_to_view = camera.view * gauss_pos;
+    let view_to_clip = camera.proj * world_to_view;
+    let gauss_ndc = view_to_clip.xyz / view_to_clip.w;
+    let gauss_depth = world_to_view.z;
+
+    // cull with 1.2x bounding box
+    if (gauss_ndc.x < -1.2 || gauss_ndc.x > 1.2 || gauss_ndc.y < -1.2 || gauss_ndc.y > 1.2) {
+        return;
+    }
+
+    splats[idx].pos = gauss_ndc;
+    splats[idx].opacity = gauss_opacity;
+
+    atomicAdd(&sort_infos.keys_size, 1u);
 
     let keys_per_dispatch = workgroupSize * sortKeyPerThread; 
     // increment DispatchIndirect.dispatchx each time you reach limit for one dispatch of keys

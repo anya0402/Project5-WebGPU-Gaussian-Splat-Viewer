@@ -122,6 +122,10 @@ export default async function init(
       {min: 0, max: 1.5}
     ).on('change', (e) => {
       //TODO: Bind constants to the gaussian renderer.
+      if (ply_file_loaded && gaussian_renderer) {
+        const new_data = new Float32Array([e.value]);
+        device.queue.writeBuffer(gaussian_renderer.settings_buffer, 0, new_data);
+      }
     });
   }
 
