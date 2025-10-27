@@ -37,7 +37,7 @@ export default function get_renderer(
   const nulling_data = new Uint32Array([0]);
   const indirect_data = new Uint32Array([6, 0, 0, 0]);
   const settings_data = new Float32Array([1.0, pc.sh_deg]);
-  const splat_buffer_size = pc.num_points * (4 * 2 * 3); // 3 sets of u32 vars times 2
+  const splat_buffer_size = pc.num_points * (4 * 6); // 5 u32, size 4
 
   const nulling_buffer = createBuffer(
     device, "nulling buffer", 4, GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST, nulling_data);
@@ -154,7 +154,7 @@ export default function get_renderer(
   
   const preprocess = (encoder: GPUCommandEncoder) => {
     encoder.copyBufferToBuffer(nulling_buffer, 0, sorter.sort_info_buffer, 0, 4);
-    encoder.copyBufferToBuffer(nulling_buffer, 0, sorter.sort_dispatch_indirect_buffer, 0, 4); // CHECK is this necessary
+    encoder.copyBufferToBuffer(nulling_buffer, 0, sorter.sort_dispatch_indirect_buffer, 0, 4);
     const pass = encoder.beginComputePass({
       label: 'gaussian preprocess',
     });
