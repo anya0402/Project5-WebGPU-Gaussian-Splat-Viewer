@@ -116,7 +116,7 @@ export default function get_renderer(
         format: presentation_format,
         blend: {
             color: {
-              srcFactor: 'src-alpha',
+              srcFactor: 'one',
               dstFactor: 'one-minus-src-alpha',
               operation: 'add',
             },

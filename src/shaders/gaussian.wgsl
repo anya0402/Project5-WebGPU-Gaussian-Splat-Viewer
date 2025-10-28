@@ -27,7 +27,8 @@ struct Splat {
     rg: u32,
     b_opacity: u32,
     conic_xy: u32,
-    conic_z_radius: u32,
+    conic_z: u32,
+    radius: u32,
 };
 
 @group(0) @binding(0)
@@ -51,7 +52,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let rg = unpack2x16float(curr_splat.rg);
     let b_opacity = unpack2x16float(curr_splat.b_opacity);
     let conic_xy = unpack2x16float(curr_splat.conic_xy);
-    let conic_z_radius = unpack2x16float(curr_splat.conic_z_radius);
+    let conic_z = unpack2x16float(curr_splat.conic_z);
+    let radius = unpack2x16float(curr_splat.radius);
 
     let tri_verts = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, 1.0), vec2<f32>(-1.0, -1.0),
@@ -59,74 +61,25 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0));
     let curr_tri_vert = tri_verts[v_idx];
 
-    let radius = conic_z_radius.y;
-    let diameter = vec2<f32>(radius / camera.viewport) * 2.0; // ** why is radius vec2
-    let offset = curr_tri_vert * diameter;
-
-    out.position = vec4<f32>(pos.x + offset.x, pos.y + offset.y, 0.0, 1.0);
-    out.center = vec2<f32>(pos.x, pos.y);
+    out.position = vec4f(pos + radius * curr_tri_vert, 0.0, 1.0);
+    out.center = (pos * vec2f(0.5, -0.5) + 0.5);
     out.color = vec3<f32>(rg.xy, b_opacity.x);
-    // let gauss_ratio = f32(b_opacity.y);
-    // out.color = vec3<f32>(0.0, gauss_ratio, 0.0);
 
     out.opacity = b_opacity.y;
-    out.conic = vec3<f32>(conic_xy.xy, conic_z_radius.x);
+    out.conic = vec3<f32>(conic_xy.xy, conic_z.x);
 
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-
-    // let pos = in.position;
-    // let depth_ratio = in.color.y;
-    // let clamped = clamp(depth_ratio, 0.0, 1.0);
-    // let color_mixed = mix(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, 0.0, 0.0), clamped);
-    // return vec4<f32>(color_mixed, 1.0);
-
-    // --------------------------------------------------
-
-    // var pos_ndc = 2.0 * (in.position.xy / camera.viewport) - vec2(1.0, 1.0);
-    // pos_ndc.y = -pos_ndc.y;
-
-    // var offset_screen = pos_ndc - in.center;
-    // offset_screen.x = -offset_screen.x;
-    // offset_screen *= camera.viewport * 0.5;
-
-    // var exponent = 
-    //     in.conic.x * offset_screen.x * offset_screen.x
-    //     + in.conic.z * offset_screen.y * offset_screen.y
-    //     + in.conic.y * offset_screen.x * offset_screen.y;
-
-    // let color = in.color;
-    // let opacity = in.opacity;
-
-    // return vec4<f32>(color, 1.0) * opacity * exp(-exponent/2.0);
-
-    // --------------------------------------------------
-
     let color = in.color;
     let conic = in.conic;
     let opacity = in.opacity;
-    var pos = 2.0 * (in.position.xy / camera.viewport) - vec2(1.0, 1.0);
-    pos.y = -pos.y;
-    pos = pos - in.center;
-    pos.x = -pos.x;
-    pos = pos * camera.viewport * 0.5;
+    let pos = (in.center * camera.viewport) - in.position.xy;
     
-    let exp_q = (conic.x * pos.x * pos.x) + (conic.y * pos.x * pos.y) + (conic.z * pos.y * pos.y);
+    let exp_q = (conic.x * pos.x * pos.x) + (2.0 * conic.y * pos.x * pos.y) + (conic.z * pos.y * pos.y);
     let alpha = clamp(exp(exp_q / -2.0), 0.0, 0.99);
 
     return vec4<f32>(color, 1.0) * opacity * alpha;
-
-    // --------------------------------------------------
-
-    // let color = in.color;
-    // let conic = in.conic;
-    // let pos = (in.position.xy / in.position.w) - in.center;
-    
-    // let exp_q = (conic.x * pos.x * pos.x) + (conic.y * pos.x * pos.y) + (conic.z * pos.y * pos.y);
-    // let alpha = clamp(exp(exp_q / -2.0), 0.0, 0.99);
-
-    // return vec4<f32>(color * alpha, alpha);
 }

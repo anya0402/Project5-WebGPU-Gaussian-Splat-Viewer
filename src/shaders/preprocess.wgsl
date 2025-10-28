@@ -61,7 +61,8 @@ struct Splat {
     rg: u32,
     b_opacity: u32,
     conic_xy: u32,
-    conic_z_radius: u32,
+    conic_z: u32,
+    radius: u32,
 };
 
 //TODO: bind your data here
@@ -90,9 +91,10 @@ var<storage, read_write> sort_dispatch: DispatchIndirect;
 fn sh_coef(splat_idx: u32, c_idx: u32) -> vec3<f32> {
     //TODO: access your binded sh_coeff, see load.ts for how it is stored
     let max_num_coefs = 16u; // from load.ts
-    let sh_color_idx = ((splat_idx * max_num_coefs * 3u) + (c_idx * 3u)) / 2;
-    let coeff0 = unpack2x16float(sh_coefficients[sh_color_idx]);
-    let coeff1 = unpack2x16float(sh_coefficients[sh_color_idx + 1u]);
+    let sh_color_idx = ((splat_idx * max_num_coefs * 3u) + (c_idx * 3u));
+    let coeff_idx = sh_color_idx / 2u;
+    let coeff0 = unpack2x16float(sh_coefficients[coeff_idx]);
+    let coeff1 = unpack2x16float(sh_coefficients[coeff_idx + 1u]);
 
     if (sh_color_idx % 2 == 0) {
         return vec3<f32>(coeff0.x, coeff0.y, coeff1.x);
@@ -135,6 +137,7 @@ fn computeColorFromSH(dir: vec3<f32>, v_idx: u32, sh_deg: u32) -> vec3<f32> {
     return  max(vec3<f32>(0.), result);
 }
 
+// code adapted from graphdeco-inria/diff-gaussian-rasterization repo
 fn covariance3D(gaussian: Gaussian, gs_multiplier: f32) -> array<f32, 6> {
     let rot_0 = unpack2x16float(gaussian.rot[0]);
     let rot_1 = unpack2x16float(gaussian.rot[1]);
@@ -159,17 +162,20 @@ fn covariance3D(gaussian: Gaussian, gs_multiplier: f32) -> array<f32, 6> {
         vec3<f32>(0.0, 0.0, scale.z)
     );
 
-    let cov_mat = R * S * transpose(S) * transpose(R);
+    // let cov_mat = R * S * transpose(S) * transpose(R);
+    let M = S * R;
+    let cov_mat = transpose(M) * M;
 
-    // only need upper right of matrix
     let flat_mat = array<f32, 6>(cov_mat[0][0], cov_mat[0][1], cov_mat[0][2], cov_mat[1][1], cov_mat[1][2], cov_mat[2][2]);
     return flat_mat;
+
 }
 
+// code adapted from graphdeco-inria/diff-gaussian-rasterization repo
 fn covariance2D(cov_3D: array<f32, 6>, mean_view: vec4<f32>, focal: vec2<f32>) -> vec3<f32> {
     var t = mean_view.xyz;
-    let focal_x = focal.x;
-    let focal_y = focal.y;
+    let focal_x = camera.focal.x;
+    let focal_y = camera.focal.y;
     let viewmatrix = camera.view;
 
     let fovx = camera.viewport.x * 0.5 / focal_x;
@@ -198,18 +204,22 @@ fn covariance2D(cov_3D: array<f32, 6>, mean_view: vec4<f32>, focal: vec2<f32>) -
 		cov_3D[1], cov_3D[3], cov_3D[4],
 		cov_3D[2], cov_3D[4], cov_3D[5]);
 
-	let cov = transpose(T) * transpose(Vrk) * T;
+	var cov = transpose(T) * transpose(Vrk) * T;
 
     // numerical stability
-	// cov[0][0] += 0.3f;
-	// cov[1][1] += 0.3f;
+	cov[0][0] = cov[0][0] + 0.3;
+	cov[1][1] = cov[1][1] + 0.3;
 	return vec3<f32>(cov[0][0], cov[0][1], cov[1][1]);
+
 }
 
 @compute @workgroup_size(workgroupSize,1,1)
 fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) wgs: vec3<u32>) {
     let idx = gid.x;
     //TODO: set up pipeline as described in instruction
+    if (idx >= arrayLength(&gaussians)) {
+        return;
+    }
 
     let gauss = gaussians[idx];
     let gs_mult = settings.gaussian_mult;
@@ -230,12 +240,11 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
 
 
     // cull with 1.2x bounding box 
-    // ** check z?
-    if (gauss_ndc.x < -1.2 || gauss_ndc.x > 1.2 || gauss_ndc.y < -1.2 || gauss_ndc.y > 1.2 || world_to_view.z < 0) {
+    if (gauss_ndc.x < -1.2 || gauss_ndc.x > 1.2 || gauss_ndc.y < -1.2 || gauss_ndc.y > 1.2 || world_to_view.z < near_plane || world_to_view.z > far_plane) {
         return;
     }
 
-    // covariance and radius
+    // covariance and radius (code adapted from graphdeco-inria/diff-gaussian-rasterization repo)
     let cov_3d = covariance3D(gauss, gs_mult);
     let cov_2d = covariance2D(cov_3d, world_to_view, camera.focal);
     let det = (cov_2d.x * cov_2d.z - cov_2d.y * cov_2d.y);
@@ -247,18 +256,16 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let mid = 0.5 * (cov_2d.x + cov_2d.z);
     let lambda1 = mid + sqrt(max(0.1, mid * mid - det));
     let lambda2 = mid - sqrt(max(0.1, mid * mid - det));
-    let gauss_radius = ceil(3.0 * sqrt(max(lambda1, lambda2)));
-
-    // let gauss_depth_normal = (gauss_depth - near_plane) / (far_plane - near_plane);
+    let gauss_radius = ceil(3.0 * sqrt(max(lambda1, lambda2))) * 2.0 / camera.viewport;
 
     // get color
     let color_dir = normalize(gauss_pos.xyz - camera.view_inv[3].xyz);
     let color_vec = computeColorFromSH(color_dir, idx, sh_deg_val);
 
-    // sort stuff
+    // sort depth
     let sort_key_idx = atomicAdd(&sort_infos.keys_size, 1u);
-    sort_indices[sort_key_idx] = sort_key_idx;
     sort_depths[sort_key_idx] = bitcast<u32>(gauss_depth);
+    sort_indices[sort_key_idx] = sort_key_idx;
 
     let keys_per_dispatch = workgroupSize * sortKeyPerThread; 
     // increment DispatchIndirect.dispatchx each time you reach limit for one dispatch of keys
@@ -269,8 +276,8 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     // put info into splats
     splats[sort_key_idx].pos = pack2x16float(gauss_ndc.xy);
     splats[sort_key_idx].conic_xy = pack2x16float(conic_inv.xy);
-    splats[sort_key_idx].conic_z_radius = pack2x16float(vec2(conic_inv.z, gauss_radius));
+    splats[sort_key_idx].conic_z = pack2x16float(vec2(conic_inv.z, 0.0));
+    splats[sort_key_idx].radius = pack2x16float(gauss_radius);
     splats[sort_key_idx].rg = pack2x16float(color_vec.rg);
     splats[sort_key_idx].b_opacity = pack2x16float(vec2(color_vec.b, opacity_sigmoid));
-    // splats[sort_key_idx].b_opacity = pack2x16float(vec2(color_vec.b, gauss_depth_normal));
 }
